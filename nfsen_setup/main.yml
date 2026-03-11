@@ -1,0 +1,200 @@
+---
+- name: Install nfdump and NfSen
+  hosts: nfsen
+  become: yes
+
+  vars:
+    nfdump_version: "1.7.3"
+    nfsen_version: "1.3.8"
+    php_version: "8.3"
+    basedir: "/apps/nfsen"
+    htmldir: "/var/www/html/nfsen"
+
+  tasks:
+    - name: Refresh DNF metadata
+      dnf:
+        update_cache: yes
+
+    - name: Ensure required system packages are installed
+      dnf:
+        name:
+          - perl-lib
+          - perl-core
+          - perl-IPC-SysV
+          - perl-MailTools
+          - perl-Socket6
+          - perl-Sys-Syslog
+          - perl-File-Copy
+          - perl-Getopt-Long
+          - perl-IO-Socket-IP
+          - rrdtool
+          - rrdtool-perl
+          - dejavu-sans-fonts
+          - "nfdump-{{ nfdump_version }}-1.el9.x86_64"
+        state: present
+
+    - name: Reset PHP module
+      shell: dnf module reset php -y
+
+    - name: Enable PHP module
+      shell: dnf module enable php:{{ php_version }} -y
+
+    - name: Install PHP packages
+      ansible.builtin.dnf:
+        name:
+          - php
+          - php-cli
+          - php-common
+          - php-fpm
+          - php-gd
+          - php-xml
+          - php-json
+          - php-mbstring
+          - php-process
+          - php-pecl-rrd
+        state: present
+
+    - name: Create rrd.ini configuration file
+      ansible.builtin.copy:
+        dest: /etc/php.d/30-rrd.ini
+        content: "extension=rrd.so"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart PHP-FPM
+
+    - name: Enable and start php-fpm
+      ansible.builtin.systemd:
+        name: php-fpm
+        enabled: yes
+        state: started
+
+    - name: Ensure Apache (httpd) is installed
+      dnf:
+        name:
+          - httpd
+          - mod_ssl
+        state: present
+
+    - name: Create netflow user
+      user:
+        name: netflow
+        home: "{{ basedir }}"
+        shell: /bin/false
+        groups: apache
+        create_home: yes
+
+    - name: Copy nfsen tarball
+      copy:
+        src: files/nfsen-rhel9-{{ nfsen_version }}.tar.gz
+        dest: /tmp/nfsen-{{ nfsen_version }}.tar.gz
+
+    - name: Extract NfSen source
+      unarchive:
+        src: "/tmp/nfsen-{{ nfsen_version }}.tar.gz"
+        dest: "/usr/local/src/"
+        remote_src: yes
+
+    - name: Deploy custom nfsen.conf
+      copy:
+        src: nfsen.conf
+        dest: "/usr/local/src/nfsen-{{ nfsen_version }}/etc/nfsen.conf"
+        owner: netflow
+        group: apache
+        mode: '0644'
+
+    - name: Install NfSen
+      shell: |
+        cd /usr/local/src/nfsen-{{ nfsen_version }}
+        perl -I. ./install.pl etc/nfsen.conf
+
+    - name: Create NfSen systemd service file
+      copy:
+        dest: /etc/systemd/system/nfsen.service
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=NfSen Netflow Collector
+          After=network.target
+    
+          [Service]
+          Type=simple
+          User=root
+          Group=root
+          ExecStart=/apps/nfsen/bin/nfsen start
+          ExecStop=/apps/nfsen/bin/nfsen stop
+          ExecReload=/apps/nfsen/bin/nfsen reload
+          PIDFile=/apps/nfsen/var/run/nfsen.pid
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+    
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+    
+    - name: Enable and start NfSen service
+      systemd:
+        name: nfsen
+        enabled: yes
+        state: started
+
+    - name: Ensure /var/www/html/nfsen is owned by apache:apache
+      ansible.builtin.file:
+        path: /var/www/html/nfsen
+        owner: apache
+        group: apache
+        recurse: yes
+
+    - name: Ensure /apps/nfsen is owned by apache:apache
+      ansible.builtin.file:
+        path: /apps/nfsen
+        owner: netflow
+        group: apache
+        recurse: yes
+
+    - name: Enable and start Apache httpd
+      service:
+        name: httpd
+        state: started
+        enabled: yes
+    
+    - name: Allow inbound HTTPS
+      iptables:
+        chain: INPUT
+        protocol: tcp
+        destination_port: 80
+        jump: ACCEPT
+
+    - name: Allow UDP ports for NfSen collectors
+      iptables:
+        chain: INPUT
+        protocol: udp
+        destination_port: "{{ item }}"
+        jump: ACCEPT
+      loop:
+        - 9000:9100
+        - 9995:9996
+
+    - name: Save iptables rules
+      command: service iptables save
+ 
+    - name: (temp solution) disable SELinux
+      shell: setenforce 0
+
+  handlers:
+    - name: Restart Apache
+      service:
+        name: httpd
+        state: restarted
+    - name: Restart PHP-FPM
+      ansible.builtin.systemd:
+        name: php-fpm
+        state: restarted
+    - name: Restart NfSen service
+      ansible.builtin.systemd:
+        name: nfsen
+        state: started
