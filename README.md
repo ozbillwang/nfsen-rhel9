@@ -9,12 +9,12 @@ ansible-playbook -i inventory.ini --limit nfsenserver-1  nfsen_setup/main.yml
 
 NfSen is hard to run on Red Hat because it’s an old, interactive, Debian‑era tool that doesn’t match Red Hat’s modern security model, directory layout, or automation standards.
 
-I did some changes directly and packaged it as files/nfsen-1.3.8-rhel9.tar.gz
+I did some changes directly and packaged it as [nfsen_setup/files/nfsen-1.3.8-rhel9.tar.gz](nfsen_setup/files/nfsen-1.3.8-rhel9.tar.gz)
 
 Here are the difference, based on original version 1.3.8
 
 ```
-diff -rw nfsen-1.3.8-rhel9 nfsen-1.3.8                                                                                                                                         [master]
+$ diff -rw nfsen-1.3.8-rhel9 nfsen-1.3.8                                                                                                                            
 diff -rw nfsen-1.3.8-rhel9/install.pl nfsen-1.3.8/install.pl
 41,42d40
 < use lib "./lib";
